@@ -1,10 +1,13 @@
-# Namespace where the oauth2-proxy workload (upstream chart) is deployed.
-# Our VirtualService and ExternalSecret land in this namespace too.
+# Namespace where the chart is installed. Everything (subchart workload +
+# our mesh resources tied to oauth2-proxy by name) lives here.
 namespace: oauth2-proxy
 
 # Cookie / hosted domain. `auth.<cookieDomain>` is the OAuth callback host
-# and is hardcoded into the EnvoyFilter Lua.
+# and is hardcoded into the EnvoyFilter Lua and the upstream chart config.
 cookieDomain: dev.psychicbook.net
+
+# Google Workspace email domain allowed by oauth2-proxy.
+emailDomain: aptlifemedia.com
 
 # Istio gateway selector label — must match the main-gateway Deployment.
 gatewayApp: main-gateway
@@ -52,5 +55,108 @@ externalSecret:
   googleOauthSsmPath: ""            # /psychicbook/development/oauth2-proxy/google_oauth_credentials
   cookieSecretSsmPath: ""           # /psychicbook/development/oauth2-proxy/cookie_secret
 
-# Optional: extra raw manifests (mesh-level policies, etc.) rendered as-is.
+# ── Upstream oauth2-proxy chart (subchart, no alias) ─────────────────────
+# Values map 1:1 to the upstream chart's values.yaml.
+# See: https://github.com/oauth2-proxy/manifests/blob/main/helm/oauth2-proxy/values.yaml
+oauth2-proxy:
+  replicaCount: 1
+
+  image:
+    registry: quay.io
+    repository: oauth2-proxy/oauth2-proxy
+    tag: ""
+    pullPolicy: IfNotPresent
+
+  # Disable bundled redis subchart (uses unavailable bitnami image).
+  sessionStorage:
+    type: cookie
+
+  redis:
+    enabled: false
+
+  config:
+    # K8s secret managed by our ExternalSecret. Required keys:
+    # client-id, client-secret, cookie-secret.
+    existingSecret: oauth2-proxy
+
+    # Defaults target dev.psychicbook.net + aptlifemedia.com. Consumers
+    # in other environments override `oauth2Proxy.config.configFile`
+    # (e.g. via ArgoCD Application helm.values) with the right domains.
+    configFile: |-
+      provider = "google"
+      email_domains = ["aptlifemedia.com"]
+      cookie_domains = [".dev.psychicbook.net"]
+      whitelist_domains = [".dev.psychicbook.net"]
+      redirect_url = "https://auth.dev.psychicbook.net/oauth2/callback"
+      upstreams = ["static://200"]
+      skip_provider_button = true
+
+      # ── Cookie / CSRF tuning ───────────────────────────────────
+      cookie_secure = true
+      cookie_httponly = true
+      # SameSite=lax theoretically allows top-level redirects to
+      # carry the cookie back (Google → auth.dev callback IS
+      # top-level), but some browsers + privacy extensions drop
+      # the cookie in the cross-origin OAuth chain. Switching to
+      # "none" + Secure=true is the standard fix for OAuth/SSO
+      # flows behind CDNs and proxies.
+      cookie_samesite = "none"
+      cookie_expire = "24h"
+      # Default CSRF cookie lifetime is 15m which is too tight when
+      # a user takes a moment on Google's "choose account" page,
+      # gets distracted, or hits a slow callback. Bumping to 1h
+      # eliminates spurious "CSRF token not found" 403s without
+      # weakening the OAuth flow security materially.
+      cookie_csrf_expire = "1h"
+      # true = each /oauth2/start call creates a uniquely-named
+      # _oauth2_proxy_csrf_<hash> cookie instead of overwriting the
+      # single shared _oauth2_proxy_csrf cookie. Required because
+      # ArgoCD keeps several concurrent SSE streams open — each
+      # triggers its own /oauth2/start, and without per-request
+      # CSRF cookies the last one wins and login fails with
+      # "CSRF token mismatch" 403.
+      cookie_csrf_per_request = true
+      # Periodically rotate the session so refresh tokens get used
+      # before they expire (Google access tokens live 1h).
+      cookie_refresh = "1h"
+
+      # ── Reverse-proxy awareness ────────────────────────────────
+      # We sit behind istio-ingressgateway which already TLS-
+      # terminates and forwards X-Forwarded-* headers. Tell
+      # oauth2-proxy to trust them so it doesn't generate http://
+      # redirect URLs or reject the auth request as untrusted.
+      reverse_proxy = true
+
+      # Pass X-Auth-Request-* headers downstream so apps can read
+      # the authenticated user/email without extra round-trips.
+      set_xauthrequest = true
+
+      silence_ping_logging = true
+      skip_auth_routes = [
+        "^/actuator/health",
+        "^/health"
+      ]
+
+  service:
+    type: ClusterIP
+    portNumber: 4180
+
+  # Reloader watches Deployment.metadata.annotations, not pod template.
+  deploymentAnnotations:
+    reloader.stakater.com/auto: "true"
+
+  podAnnotations:
+    sidecar.istio.io/inject: "true"
+
+  resources:
+    requests:
+      cpu: 20m
+      memory: 50Mi
+    limits:
+      memory: 100Mi
+
+  nodeSelector:
+    node-group-purpose: default
+
+# Optional: extra raw manifests rendered as-is (mesh-level policies, etc.).
 extraManifests: []

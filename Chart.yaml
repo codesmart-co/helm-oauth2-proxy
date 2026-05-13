@@ -1,14 +1,21 @@
 apiVersion: v2
-name: oauth2-proxy
+name: oauth2-proxy-mesh
 description: |
-  Istio gateway resources that wire oauth2-proxy into the mesh:
-  AuthorizationPolicy (CUSTOM ext_authz), EnvoyFilter (401→302 Lua),
-  VirtualService for auth.<cookie_domain>, and ExternalSecret for
-  Google OAuth credentials + cookie secret.
+  Bundles the upstream `oauth2-proxy` chart as a subchart plus the Istio
+  mesh resources that wire it into the gateway: AuthorizationPolicy (CUSTOM
+  ext_authz), EnvoyFilter (401→302 Lua redirect with `rd` preserved),
+  VirtualService for auth.<cookieDomain>, and an ExternalSecret pulling
+  Google OAuth credentials + cookie secret from SSM.
 
-  The oauth2-proxy workload itself is NOT in this chart — it ships
-  from the upstream oauth2-proxy.github.io chart via a separate
-  ArgoCD Application.
+  One chart deploys the whole SSO ingress — the Terraform module only
+  creates the ArgoCD Application that points to this OCI artifact and
+  feeds per-environment hosts via values.
 type: application
-version: 0.1.0
+version: 0.2.0
 appVersion: "10.x"
+
+dependencies:
+  - name: oauth2-proxy
+    version: "10.*"
+    repository: https://oauth2-proxy.github.io/manifests
+    # No alias — values land under `oauth2-proxy:` key.

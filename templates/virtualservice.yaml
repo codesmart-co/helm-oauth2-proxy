@@ -9,6 +9,8 @@ kind: VirtualService
 metadata:
   name: {{ .Values.virtualService.name }}
   namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "oauth2-proxy-mesh.labels" . | nindent 4 }}
 spec:
   hosts:
     - "auth.{{ .Values.cookieDomain }}"
