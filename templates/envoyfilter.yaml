@@ -1,0 +1,166 @@
+{{- /*
+EnvoyFilter: redirect unauthenticated requests on protected hosts to
+oauth2-proxy /oauth2/start, preserving the original URL as `rd` so the user
+lands back on the page they tried to access after Google sign-in.
+
+Request-phase redirect: oauth2-proxy's ext_authz inserts BEFORE this Lua, so
+on a 401 from ext_authz the response handler runs without metadata. We
+intercept in envoy_on_request when the session cookie is missing, sending an
+immediate 302 → /oauth2/start?rd=<current-url>.
+
+envoy_on_response is kept as a fallback for the expired-cookie case: the
+cookie exists, ext_authz rejects it (401), the response handler now has
+valid metadata (envoy_on_request DID run) → 302 with `rd`.
+
+The Lua only fires on protectedHosts / protectedPaths; everything else is
+left alone so legitimate upstream 401s (Spring Security, Basic-auth) don't
+get hijacked into an SSO loop.
+*/}}
+{{- if .Values.envoyFilter.enabled }}
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: {{ .Values.envoyFilter.name }}
+  namespace: {{ .Values.envoyFilter.namespace }}
+spec:
+  workloadSelector:
+    labels:
+      app: {{ .Values.gatewayApp }}
+  configPatches:
+    - applyTo: HTTP_FILTER
+      match:
+        context: GATEWAY
+        listener:
+          filterChain:
+            filter:
+              name: "envoy.filters.network.http_connection_manager"
+              subFilter:
+                name: "envoy.filters.http.router"
+      patch:
+        operation: INSERT_BEFORE
+        value:
+          name: envoy.filters.http.lua
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua
+            default_source_code:
+              inline_string: |
+                local AUTH_HOST = "auth.{{ .Values.cookieDomain }}"
+
+                local PROTECTED_HOSTS = {
+                  {{- range .Values.protectedHosts }}
+                  [{{ . | quote }}] = true,
+                  {{- end }}
+                }
+
+                local PROTECTED_PATHS = {
+                  {{- range .Values.protectedPaths }}
+                  { host = {{ .host | quote }}, prefix = {{ .pathPrefix | quote }} },
+                  {{- end }}
+                }
+
+                local function path_protected(host, path)
+                  for _, r in ipairs(PROTECTED_PATHS) do
+                    if r.host == host and
+                       string.sub(path, 1, #r.prefix) == r.prefix then
+                      return true
+                    end
+                  end
+                  return false
+                end
+
+                -- Percent-encode everything except unreserved URI characters.
+                local function url_encode(s)
+                  return string.gsub(s, "([^%w%-_%.~])", function(c)
+                    return string.format("%%%02X", string.byte(c))
+                  end)
+                end
+
+                -- Build the /oauth2/start redirect response and terminate the
+                -- request immediately (no upstream call, no ext_authz check).
+                local function redirect_to_login(handle, host, path)
+                  local rd     = "https://" .. host .. path
+                  local target = "https://" .. AUTH_HOST ..
+                                 "/oauth2/start?rd=" .. url_encode(rd)
+                  handle:respond(
+                    { [":status"]       = "302",
+                      ["location"]      = target,
+                      ["content-length"] = "0",
+                      ["cache-control"] = "no-store, no-cache" },
+                    "")
+                end
+
+                function envoy_on_request(request_handle)
+                  local h    = request_handle:headers()
+                  local host = h:get(":authority") or ""
+                  local path = h:get(":path")      or "/"
+
+                  -- Always stash host + path; the response-phase fallback
+                  -- (expired-cookie case) reads them from here.
+                  request_handle:streamInfo():dynamicMetadata():set(
+                    "oauth2_redirect", "host", host)
+                  request_handle:streamInfo():dynamicMetadata():set(
+                    "oauth2_redirect", "path", path)
+
+                  -- ── Primary redirect (no session cookie, request phase) ──
+                  -- Skip non-protected hosts, the auth host itself, and API paths.
+                  if host == AUTH_HOST then return end
+                  if string.sub(path, 1, 5) == "/api/" then return end
+                  if not PROTECTED_HOSTS[host] and
+                     not path_protected(host, path) then
+                    return
+                  end
+
+                  -- Check for the oauth2-proxy session cookie.
+                  -- Any _oauth2_proxy* cookie (including chunked _oauth2_proxy_N)
+                  -- means a session exists; validity is still checked by ext_authz.
+                  local cookies = h:get("cookie") or ""
+                  if string.find(cookies, "_oauth2_proxy", 1, true) then
+                    -- Cookie present — let ext_authz validate it normally.
+                    return
+                  end
+
+                  -- No cookie: redirect now so `rd` is always set.
+                  redirect_to_login(request_handle, host, path)
+                end
+
+                function envoy_on_response(response_handle)
+                  -- Fallback: ext_authz rejected an existing (expired/invalid)
+                  -- cookie.  envoy_on_request ran and saved metadata, so we can
+                  -- redirect with `rd` here.
+                  if response_handle:headers():get(":status") ~= "401" then
+                    return
+                  end
+
+                  -- Leave legitimate app-level 401s (Basic/Bearer challenges) alone.
+                  local www_auth = string.lower(
+                    response_handle:headers():get("www-authenticate") or "")
+                  if string.find(www_auth, "basic",  1, true) or
+                     string.find(www_auth, "bearer", 1, true) then
+                    return
+                  end
+
+                  local md = response_handle:streamInfo():dynamicMetadata():get(
+                    "oauth2_redirect")
+                  if md == nil then return end
+                  local host = md["host"]
+                  local path = md["path"]
+                  if host == nil or host == "" then return end
+
+                  if host == AUTH_HOST then return end
+                  if string.sub(path, 1, 5) == "/api/" then return end
+                  if not PROTECTED_HOSTS[host] and
+                     not path_protected(host, path) then
+                    return
+                  end
+
+                  local rd      = "https://" .. host .. path
+                  local encoded = url_encode(rd)
+                  local target  = "https://" .. AUTH_HOST ..
+                                  "/oauth2/start?rd=" .. encoded
+
+                  response_handle:headers():replace(":status",        "302")
+                  response_handle:headers():replace("location",       target)
+                  response_handle:headers():replace("content-length", "0")
+                  response_handle:body():setBytes("")
+                end
+{{- end }}

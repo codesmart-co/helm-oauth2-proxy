@@ -1,0 +1,8 @@
+{{- /*
+Optional raw manifests passed via values (e.g. mesh-level PeerAuthentication
+or actuator port allowlists). Each entry is rendered as-is.
+*/}}
+{{- range $i, $manifest := .Values.extraManifests }}
+---
+{{ $manifest | toYaml | nindent 0 }}
+{{- end }}

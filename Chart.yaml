@@ -1,0 +1,14 @@
+apiVersion: v2
+name: oauth2-proxy
+description: |
+  Istio gateway resources that wire oauth2-proxy into the mesh:
+  AuthorizationPolicy (CUSTOM ext_authz), EnvoyFilter (401→302 Lua),
+  VirtualService for auth.<cookie_domain>, and ExternalSecret for
+  Google OAuth credentials + cookie secret.
+
+  The oauth2-proxy workload itself is NOT in this chart — it ships
+  from the upstream oauth2-proxy.github.io chart via a separate
+  ArgoCD Application.
+type: application
+version: 0.1.0
+appVersion: "10.x"

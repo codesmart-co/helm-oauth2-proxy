@@ -1,0 +1,56 @@
+# Namespace where the oauth2-proxy workload (upstream chart) is deployed.
+# Our VirtualService and ExternalSecret land in this namespace too.
+namespace: oauth2-proxy
+
+# Cookie / hosted domain. `auth.<cookieDomain>` is the OAuth callback host
+# and is hardcoded into the EnvoyFilter Lua.
+cookieDomain: dev.psychicbook.net
+
+# Istio gateway selector label — must match the main-gateway Deployment.
+gatewayApp: main-gateway
+
+# ── AuthorizationPolicy ──────────────────────────────────────────────────
+# Hosts and (host, path_prefix) pairs that ext_authz must gate.
+# `protectedHosts` = entire host behind SSO.
+# `protectedPaths` = single path prefix on an otherwise-open host.
+authPolicy:
+  enabled: true
+  name: protect-internal-tools
+  namespace: istio-system
+
+protectedHosts: []
+# Example:
+#   - argocd.dev.psychicbook.net
+#   - grafana.dev.psychicbook.net
+
+protectedPaths: []
+# Example:
+#   - host: api.dev.psychicbook.net
+#     pathPrefix: /profile/swagger-ui/
+
+# ── EnvoyFilter (401 → 302 Lua redirect) ─────────────────────────────────
+envoyFilter:
+  enabled: true
+  name: oauth2-proxy-redirect-401
+  namespace: istio-system
+
+# ── VirtualService for auth.<cookieDomain> ───────────────────────────────
+virtualService:
+  enabled: true
+  name: oauth2-proxy
+  serviceName: oauth2-proxy
+  servicePort: 4180
+  gatewayRef: istio-system/main-gateway
+
+# ── ExternalSecret (Google OAuth credentials + cookie secret) ────────────
+externalSecret:
+  enabled: true
+  name: oauth2-proxy
+  targetName: oauth2-proxy
+  refreshInterval: 1h
+  clusterSecretStoreName: ""        # e.g. psychicbook-development-ssm
+  googleOauthSsmPath: ""            # /psychicbook/development/oauth2-proxy/google_oauth_credentials
+  cookieSecretSsmPath: ""           # /psychicbook/development/oauth2-proxy/cookie_secret
+
+# Optional: extra raw manifests (mesh-level policies, etc.) rendered as-is.
+extraManifests: []

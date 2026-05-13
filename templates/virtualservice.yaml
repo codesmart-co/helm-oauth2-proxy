@@ -1,0 +1,23 @@
+{{- /*
+VirtualService: auth.<cookieDomain> → oauth2-proxy for the OAuth callback.
+No external-dns target annotation — the Route53 wildcard *.<cookieDomain>
+→ Istio NLB handles DNS for every subdomain including auth.* uniformly.
+*/}}
+{{- if .Values.virtualService.enabled }}
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: {{ .Values.virtualService.name }}
+  namespace: {{ .Values.namespace }}
+spec:
+  hosts:
+    - "auth.{{ .Values.cookieDomain }}"
+  gateways:
+    - {{ .Values.virtualService.gatewayRef }}
+  http:
+    - route:
+        - destination:
+            host: {{ printf "%s.%s.svc.cluster.local" .Values.virtualService.serviceName .Values.namespace }}
+            port:
+              number: {{ .Values.virtualService.servicePort }}
+{{- end }}

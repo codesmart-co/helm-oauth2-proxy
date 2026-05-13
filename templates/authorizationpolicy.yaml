@@ -1,0 +1,43 @@
+{{- /*
+AuthorizationPolicy: gate the listed hosts behind Google SSO via the
+`oauth2-proxy` extensionProvider declared in istiod meshConfig.
+
+Default everywhere on the gateway = OPEN (no AuthorizationPolicy → no auth).
+A request matches a `to.operation` entry below → CUSTOM action runs
+→ ext_authz call → oauth2-proxy /oauth2/auth → 200 if Google session cookie
+valid, 401 → Envoy redirects browser to auth.<cookieDomain>/oauth2/start
+(via the Lua EnvoyFilter sibling template).
+*/}}
+{{- if and .Values.authPolicy.enabled (or .Values.protectedHosts .Values.protectedPaths) }}
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: {{ .Values.authPolicy.name }}
+  namespace: {{ .Values.authPolicy.namespace }}
+spec:
+  selector:
+    matchLabels:
+      app: {{ .Values.gatewayApp }}
+  action: CUSTOM
+  provider:
+    name: oauth2-proxy
+  rules:
+    {{- if .Values.protectedHosts }}
+    # ---- whole-host protection ----------------------------------------
+    - to:
+        - operation:
+            hosts:
+              {{- range .Values.protectedHosts }}
+              - {{ . | quote }}
+              {{- end }}
+    {{- end }}
+    {{- range .Values.protectedPaths }}
+    # ---- path-scoped protection: {{ .host }}{{ .pathPrefix }}* -----------
+    - to:
+        - operation:
+            hosts:
+              - {{ .host | quote }}
+            paths:
+              - {{ printf "%s*" .pathPrefix | quote }}
+    {{- end }}
+{{- end }}
