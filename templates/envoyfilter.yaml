@@ -112,6 +112,25 @@ spec:
                     return
                   end
 
+                  -- SBA has no form-login POST handler; browser is sent to
+                  -- /login?redirectTo=<page> on a 401 but POST /login → 405.
+                  -- Intercept here and redirect straight to oauth2/start so
+                  -- Google re-auth drops the user on the original page.
+                  if string.sub(host, 1, 11) == "management." and
+                     string.sub(path, 1, 7) == "/login?" then
+                    local redir = string.match(path, "[?&]redirectTo=([^&]+)")
+                    if redir then
+                      request_handle:respond(
+                        { [":status"]        = "302",
+                          ["location"]       = "https://" .. AUTH_HOST ..
+                                               "/oauth2/start?rd=" .. redir,
+                          ["content-length"] = "0",
+                          ["cache-control"]  = "no-store, no-cache" },
+                        "")
+                      return
+                    end
+                  end
+
                   -- Check for the oauth2-proxy session cookie.
                   -- Any _oauth2_proxy* cookie (including chunked _oauth2_proxy_N)
                   -- means a session exists; validity is still checked by ext_authz.
