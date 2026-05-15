@@ -1,0 +1,97 @@
+name: Push chart to ECR
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - Chart.yaml
+      - Chart.lock
+      - values.yaml
+      - 'templates/**'
+      - 'charts/**'
+
+permissions:
+  id-token: write   # required for OIDC token
+  contents: read
+
+env:
+  AWS_REGION:    us-east-1
+  ECR_REGISTRY:  491230850732.dkr.ecr.us-east-1.amazonaws.com
+  DEST_PREFIX:   helm-charts
+
+jobs:
+  push:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read chart metadata
+        id: chart
+        run: |
+          NAME=$(grep '^name:'    Chart.yaml | awk '{print $2}')
+          VERS=$(grep '^version:' Chart.yaml | awk '{print $2}')
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "version=$VERS" >> "$GITHUB_OUTPUT"
+          echo "Chart: $NAME  version: $VERS"
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: ECR login
+        run: |
+          aws ecr get-login-password --region "$AWS_REGION" | \
+            helm registry login \
+              --username AWS \
+              --password-stdin \
+              "$ECR_REGISTRY"
+
+      - name: Check if version already in ECR
+        id: check
+        run: |
+          REPO="${DEST_PREFIX}/${{ steps.chart.outputs.name }}"
+          TAG="${{ steps.chart.outputs.version }}"
+          if aws ecr describe-images \
+               --repository-name "$REPO" \
+               --image-ids imageTag="$TAG" \
+               --region "$AWS_REGION" \
+               >/dev/null 2>&1; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "oci://$ECR_REGISTRY/$REPO:$TAG already in ECR — skipping."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Helm
+        if: steps.check.outputs.skip == 'false'
+        uses: azure/setup-helm@v4
+        with:
+          version: '3.16.4'
+
+      - name: Helm dependency update
+        if: steps.check.outputs.skip == 'false'
+        run: helm dependency update .
+
+      - name: Helm package
+        if: steps.check.outputs.skip == 'false'
+        run: helm package . -d /tmp/pkg
+
+      - name: Ensure ECR repository exists
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          aws ecr create-repository \
+            --repository-name "${DEST_PREFIX}/${{ steps.chart.outputs.name }}" \
+            --region "$AWS_REGION" \
+            --image-scanning-configuration scanOnPush=false \
+            2>/dev/null || true
+
+      - name: Helm push to ECR
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          helm push \
+            "/tmp/pkg/${{ steps.chart.outputs.name }}-${{ steps.chart.outputs.version }}.tgz" \
+            "oci://$ECR_REGISTRY/$DEST_PREFIX"
+          echo "Pushed: oci://$ECR_REGISTRY/$DEST_PREFIX/${{ steps.chart.outputs.name }}:${{ steps.chart.outputs.version }}"
