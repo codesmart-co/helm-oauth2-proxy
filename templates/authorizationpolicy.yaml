@@ -24,10 +24,18 @@ spec:
   provider:
     name: oauth2-proxy
   rules:
+    {{- /*
+    `ports: ["443"]` scopes ext_authz to HTTPS only. HTTP requests on
+    port 80 fall through to the Gateway's `httpsRedirect: true` and get
+    a 301 to https://<host> instead of a 302 into the oauth flow — so
+    Brave's HTTPS-Only Mode (and HSTS-aware clients) can upgrade cleanly
+    without the "site doesn't support HTTPS" warning.
+    */ -}}
     {{- if .Values.protectedHosts }}
     # ---- whole-host protection ----------------------------------------
     - to:
         - operation:
+            ports: ["443"]
             hosts:
               {{- range .Values.protectedHosts }}
               - {{ . | quote }}
@@ -37,6 +45,7 @@ spec:
     # ---- path-scoped protection: {{ .host }}{{ .pathPrefix }}* -----------
     - to:
         - operation:
+            ports: ["443"]
             hosts:
               - {{ .host | quote }}
             paths:
