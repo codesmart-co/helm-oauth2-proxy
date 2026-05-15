@@ -112,10 +112,25 @@ spec:
                     return
                   end
 
-                  -- SBA has no form-login POST handler; browser is sent to
-                  -- /login?redirectTo=<page> on a 401 but POST /login → 405.
-                  -- Intercept here and redirect straight to oauth2/start so
-                  -- Google re-auth drops the user on the original page.
+                  -- Check for the oauth2-proxy session cookie first.
+                  -- Any _oauth2_proxy* cookie (including chunked _oauth2_proxy_N)
+                  -- means a session exists; validity is still checked by ext_authz.
+                  -- Must come before the management /login? special case below so
+                  -- that an authenticated user whose Vue.js frontend redirects to
+                  -- /login?redirectTo=<page> is NOT intercepted here — the request
+                  -- must reach SBA (permitAll + headerAuthFilter) so Vue.js can read
+                  -- the authenticated user from sba-settings.js and navigate to
+                  -- redirectTo without looping.
+                  local cookies = h:get("cookie") or ""
+                  if string.find(cookies, "_oauth2_proxy", 1, true) then
+                    -- Cookie present — let ext_authz validate it normally.
+                    return
+                  end
+
+                  -- No session cookie. SBA has no form-login POST handler; an
+                  -- unauthenticated browser is sent to /login?redirectTo=<page>.
+                  -- Intercept here and redirect straight to oauth2/start so the
+                  -- user authenticates and lands on the original page.
                   if string.sub(host, 1, 11) == "management." and
                      string.sub(path, 1, 7) == "/login?" then
                     local redir = string.match(path, "[?&]redirectTo=([^&]+)")
@@ -131,16 +146,7 @@ spec:
                     end
                   end
 
-                  -- Check for the oauth2-proxy session cookie.
-                  -- Any _oauth2_proxy* cookie (including chunked _oauth2_proxy_N)
-                  -- means a session exists; validity is still checked by ext_authz.
-                  local cookies = h:get("cookie") or ""
-                  if string.find(cookies, "_oauth2_proxy", 1, true) then
-                    -- Cookie present — let ext_authz validate it normally.
-                    return
-                  end
-
-                  -- No cookie: redirect now so `rd` is always set.
+                  -- No cookie and not a /login? path: redirect now so `rd` is set.
                   redirect_to_login(request_handle, host, path)
                 end
 

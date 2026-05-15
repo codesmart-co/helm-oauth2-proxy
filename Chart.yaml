@@ -11,7 +11,7 @@ description: |
   creates the ArgoCD Application that points to this OCI artifact and
   feeds per-environment hosts via values.
 type: application
-version: 0.3.0
+version: 0.4.0
 appVersion: "10.x"
 
 dependencies:
