@@ -96,6 +96,15 @@ spec:
                   local host = h:get(":authority") or ""
                   local path = h:get(":path")      or "/"
 
+                  -- HTTP requests: let the Gateway's `httpsRedirect: true` fire
+                  -- 301 to https://<host><path> first. Otherwise this Lua filter
+                  -- (which runs before the Router where httpsRedirect lives)
+                  -- would short-circuit with a 302 to /oauth2/start on http://,
+                  -- breaking Brave's HTTPS-Only Mode and any HSTS-aware client
+                  -- that expects an upgrade response before the auth flow.
+                  local scheme = h:get(":scheme") or ""
+                  if scheme == "http" then return end
+
                   -- Always stash host + path; the response-phase fallback
                   -- (expired-cookie case) reads them from here.
                   request_handle:streamInfo():dynamicMetadata():set(
