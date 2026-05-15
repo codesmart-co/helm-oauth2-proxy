@@ -108,14 +108,13 @@ oauth2-proxy:
       # eliminates spurious "CSRF token not found" 403s without
       # weakening the OAuth flow security materially.
       cookie_csrf_expire = "1h"
-      # true = each /oauth2/start call creates a uniquely-named
-      # _oauth2_proxy_csrf_<hash> cookie instead of overwriting the
-      # single shared _oauth2_proxy_csrf cookie. Required because
-      # ArgoCD keeps several concurrent SSE streams open — each
-      # triggers its own /oauth2/start, and without per-request
-      # CSRF cookies the last one wins and login fails with
-      # "CSRF token mismatch" 403.
-      cookie_csrf_per_request = true
+      # cookie_csrf_per_request intentionally left at default (false):
+      # with true browsers accumulate stale _oauth2_proxy_<hash>_csrf
+      # cookies across re-auth attempts → Cookie header bloats → either
+      # 400 Bad Request from gateway or oauth2-proxy rejects rd and
+      # falls back to /, breaking post-auth redirect to the original page.
+      # Trade-off: ArgoCD concurrent SSE streams may occasionally hit
+      # "CSRF token mismatch" — acceptable for the common-case fix.
       # Periodically rotate the session so refresh tokens get used
       # before they expire (Google access tokens live 1h).
       cookie_refresh = "1h"
