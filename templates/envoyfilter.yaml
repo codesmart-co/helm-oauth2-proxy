@@ -105,6 +105,16 @@ spec:
                   local scheme = h:get(":scheme") or ""
                   if scheme == "http" then return end
 
+                  -- CORS preflight: browsers send OPTIONS without cookies per
+                  -- spec, so this filter would redirect them to /oauth2/start
+                  -- (302). Browser sees non-2xx on preflight → fails CORS check
+                  -- → JS frontend treats as auth error → /login redirect loop
+                  -- (observed in Spring Boot Admin when opening /instances/X/env).
+                  -- Let ext_authz handle OPTIONS — oauth2-proxy has
+                  -- skip_auth_preflight = true so it'll return 200 unconditionally.
+                  local method = h:get(":method") or ""
+                  if method == "OPTIONS" then return end
+
                   -- Always stash host + path; the response-phase fallback
                   -- (expired-cookie case) reads them from here.
                   request_handle:streamInfo():dynamicMetadata():set(
